@@ -170,12 +170,10 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 
     let screenshot_path = "/home/pi/screenshot.png";
 
-    // Get the screen resolution dynamically using `xrandr`
     let resolution_output = Command::new("xrandr")
         .arg("--current")
         .output()
-        .await
-        .expect("Failed to execute xrandr");
+        .await?;
 
     let resolution_str = std::str::from_utf8(&resolution_output.stdout)?;
     let resolution_line = resolution_str
@@ -188,7 +186,6 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
         .nth(0)
         .ok_or("Failed to parse resolution")?;
 
-    // Use the resolution in the ffmpeg command
     let output = Command::new("ffmpeg")
         .arg("-f")
         .arg("x11grab")
@@ -204,10 +201,7 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 
     if output.status.success() {
         println!("Screenshot saved to {}", screenshot_path);
-        // Call the upload_screenshot function after taking the screenshot
-        if let Err(e) = upload_screenshot(client, config, screenshot_path).await {
-            eprintln!("Failed to upload screenshot: {}", e);
-        }
+        upload_screenshot(client, config, screenshot_path).await?;
     } else {
         eprintln!(
             "Failed to take screenshot: {}",
@@ -218,31 +212,12 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
     Ok(())
 }
 
-async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/update-screenshot-device/{}", config.url, config.id);
-    println!("Updating screenshot flag at URL: {}", url);
-    let response = client
-        .post(&url)
-        .header("APIKEY", config.key.clone().unwrap_or_default())
-        .json(&json!({ "screenshot": false }))
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        println!("Screenshot flag successfully updated.");
-        Ok(())
-    } else {
-        Err(format!("Failed to update screenshot flag: {:?}", response.status()).into())
-    }
-}
-
 async fn upload_screenshot(
     client: &Client,
     config: &Config,
     screenshot_path: &str,
 ) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/upload-screenshot/{}", config.url, config.id);
-    println!("Generated URL: {}", url);
     let mut file = File::open(screenshot_path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
@@ -253,33 +228,15 @@ async fn upload_screenshot(
 
     let form = Form::new().part("file", part);
 
-    let response = client
+    client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .multipart(form)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
 
-    if response.status().is_success() {
-        println!("Screenshot successfully uploaded.");
-
-        // Delete the screenshot file from the device
-        if let Err(e) = std::fs::remove_file(screenshot_path) {
-            eprintln!("Failed to delete screenshot: {}", e);
-        } else {
-            println!("Screenshot deleted from device.");
-        }
-
-        // Debugging statements to track the execution flow
-        println!("Calling update_screenshot_flag...");
-        if let Err(e) = update_screenshot_flag(client, config).await {
-            eprintln!("Failed to update screenshot flag: {}", e);
-        } else {
-            println!("Screenshot flag successfully updated.");
-        }
-
-        Ok(())
-    } else {
-        Err(format!("Failed to upload screenshot: {:?}", response.status()).into())
-    }
+    std::fs::remove_file(screenshot_path)?;
+    println!("Screenshot uploaded and deleted locally.");
+    Ok(())
 }
