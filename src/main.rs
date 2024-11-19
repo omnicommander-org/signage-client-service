@@ -10,14 +10,16 @@ use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::str;
-use std::{boxed::Box, error::Error};
-use tokio::process::Command;
+use std::{boxed::Box, error::Error, path::Path};
+use tokio::io::AsyncWriteExt;
+use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
-use util::{set_display};
+use util::{ set_display, Apikey, Updated};
 use uuid::Uuid;
 
 mod config;
+
 mod reporting;
 mod util;
 
@@ -30,23 +32,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Load the configs
     config.load().await?;
 
-    // Check if API key exists
-    if config.key.is_none() || config.key.as_ref().unwrap().is_empty() {
-        eprintln!("API key not found in configuration. Please set it manually.");
-        return Ok(());
-    }
-
-    println!("Using existing API key: {}", config.key.as_ref().unwrap());
-
     let _ = wait_for_api(&client, &config).await?;
+
+    println!("API key is not set. Requesting a new API key...");
+    config.key = Some(get_new_key(&client, &mut config).await?.key);
+    config.write().await?;
+
+
+
+    let mut interval = time::interval(Duration::from_secs(20));
     let mut metrics_interval = time::interval(Duration::from_secs(30));
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut hup = signal(SignalKind::hangup())?;
+
 
     loop {
         tokio::select! {
             _ = metrics_interval.tick() => {
                 let metrics = collect_and_write_metrics(&config.id).await;
                 println!("Running Metrics");
-                send_metrics(&config.id, &metrics, config.key.as_ref().unwrap(), &config);
+                send_metrics(&config.id, &metrics, &config.key.as_ref().unwrap_or(&String::new()), &config);
 
                 // Check client actions
                 let actions = get_client_actions(&client, &config).await;
@@ -66,6 +72,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+
+    Ok(())
 }
 
 async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
@@ -86,6 +94,7 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
     }
     Ok(true)
 }
+
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientActions {
@@ -112,6 +121,7 @@ async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientAc
 }
 
 async fn restart_app(client: &Client, config: &Config) {
+    // Update the restart flag to false
     let update_result = update_restart_app_flag(client, config).await;
 
     if let Err(e) = update_result {
@@ -120,6 +130,8 @@ async fn restart_app(client: &Client, config: &Config) {
     }
 
     println!("Restarting Signage Application...");
+
+    // Stop the MPV player
     let stop_mpv_output = Command::new("pkill").arg("mpv").output().await;
 
     match stop_mpv_output {
@@ -137,6 +149,7 @@ async fn restart_app(client: &Client, config: &Config) {
         }
     }
 
+    // Restart the signaged.service
     let restart_service_output = Command::new("sudo")
         .arg("systemctl")
         .arg("restart")
@@ -153,36 +166,14 @@ async fn restart_app(client: &Client, config: &Config) {
                 "Failed to restart signage service: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
+            return;
         }
         Err(e) => {
             eprintln!("Failed to execute restart command: {}", e);
+            return;
         }
     }
 }
-
-async fn update_restart_app_flag(
-    client: &Client,
-    config: &Config,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-restart-app-device/{}", config.url, config.id);
-    println!("Updating restart app flag at URL: {}", url);
-    let response = client
-        .post(&url)
-        .header("APIKEY", config.key.clone().unwrap_or_default())
-        .json(&serde_json::json!({ "restart_app": false }))
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        println!("Restart App flag successfully updated.");
-        Ok(())
-    } else {
-        Err(format!("Failed to update restart flag: {:?}", response.status()).into())
-    }
-}
-
-// Other helper functions remain unchanged
-
 
 async fn update_restart_app_flag(
     client: &Client,
