@@ -95,6 +95,24 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
     Ok(true)
 }
 
+async fn get_new_key(client: &Client, config: &mut Config) -> Result<Apikey, Box<dyn Error>> {
+    println!("Loading configuration...");
+    config.load().await?;
+    println!("{}/get-new-key/{}", config.url, config.id);
+
+    let res: Apikey = client
+        .get(format!("{}/get-new-key/{}", config.url, config.id))
+        .basic_auth(&config.username, Some(&config.password))
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    println!("Received new API key: {}", res.key);
+    config.key = Some(res.key.clone());
+    config.write().await?;
+    Ok(res)
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientActions {
