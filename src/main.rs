@@ -181,29 +181,6 @@ async fn update_restart_app_flag(
     }
 }
 
-// Other helper functions remain unchanged
-
-
-async fn update_restart_app_flag(
-    client: &Client,
-    config: &Config,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let url = format!("{}/update-restart-app-device/{}", config.url, config.id);
-    println!("Updating restart app flag at URL: {}", url);
-    let response = client
-        .post(&url)
-        .header("APIKEY", config.key.clone().unwrap_or_default())
-        .json(&serde_json::json!({ "restart_app": false }))
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        println!("Restart App flag successfully updated.");
-        Ok(())
-    } else {
-        Err(format!("Failed to update restart flag: {:?}", response.status()).into())
-    }
-}
 
 async fn restart_device(client: &Client, config: &Config) {
     // Update the restart flag to false
