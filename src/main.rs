@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use config::Config;
-
+use data::Data;
 use reporting::{collect_and_write_metrics, send_metrics};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Client, StatusCode};
@@ -15,11 +15,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
-use util::{ set_display, Apikey, Updated};
+use util::{cleanup_directory, set_display, Apikey, Updated, Video};
 use uuid::Uuid;
 
 mod config;
-
+mod data;
 mod reporting;
 mod util;
 
@@ -27,10 +27,12 @@ mod util;
 async fn main() -> Result<(), Box<dyn Error>> {
     set_display();
     let mut config = Config::new();
+    let mut data = Data::new();
     let client = Client::new();
 
     // Load the configs
     config.load().await?;
+    data.load().await?;
 
     let _ = wait_for_api(&client, &config).await?;
 
