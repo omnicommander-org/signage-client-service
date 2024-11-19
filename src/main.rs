@@ -1,31 +1,18 @@
-use chrono::{DateTime, Utc};
 use config::Config;
-
 use reporting::{collect_and_write_metrics, send_metrics};
-use reqwest::multipart::{Form, Part};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::env;
-use std::fs::File;
-use std::io::Read;
-use std::str;
-use std::{boxed::Box, error::Error, path::Path};
-use tokio::io::AsyncWriteExt;
-use tokio::process::{Child, Command};
+use std::{boxed::Box, error::Error};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
-use util::{ set_display, Apikey, Updated};
 use uuid::Uuid;
 
 mod config;
-
 mod reporting;
-mod util;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    set_display();
     let mut config = Config::new();
     let client = Client::new();
 
@@ -41,23 +28,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Using existing API key: {}", config.key.as_ref().unwrap());
 
-    let _ = wait_for_api(&client, &config).await?;
-    let mut metrics_interval = time::interval(Duration::from_secs(30));
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut hup = signal(SignalKind::hangup())?;
+    wait_for_api(&client, &config).await?;
 
+    let mut metrics_interval = time::interval(Duration::from_secs(30));
+    let mut hup = signal(SignalKind::hangup())?;
 
     loop {
         tokio::select! {
             _ = metrics_interval.tick() => {
                 let metrics = collect_and_write_metrics(&config.id).await;
                 println!("Running Metrics");
-                send_metrics(&config.id, &metrics, &config.key.as_ref().unwrap_or(&String::new()), &config);
+                send_metrics(&config.id, &metrics, &config.key.as_ref().unwrap(), &config);
 
                 // Check client actions
-                let actions = get_client_actions(&client, &config).await;
-                if let Some(actions) = actions {
+                if let Some(actions) = get_client_actions(&client, &config).await {
                     if actions.restart_app {
                         restart_app(&client, &config).await;
                     }
@@ -71,31 +55,27 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            _ = hup.recv() => {
+                println!("Received SIGHUP, reloading configuration...");
+                config.load().await?;
+            }
         }
     }
-
-    Ok(())
 }
 
-async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
+async fn wait_for_api(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
     let mut interval = time::interval(Duration::from_secs(1));
     loop {
         let res = client.get(format!("{}/health", config.url)).send().await;
         if let Ok(response) = res {
-            match response.status() {
-                StatusCode::OK => break,
-                StatusCode::INTERNAL_SERVER_ERROR => {
-                    println!("Server error. Retrying in 2 minutes...");
-                    time::interval(Duration::from_secs(120)).tick().await;
-                }
-                _ => (),
+            if response.status() == StatusCode::OK {
+                break;
             }
         }
         interval.tick().await;
     }
-    Ok(true)
+    Ok(())
 }
-
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientActions {
@@ -122,35 +102,17 @@ async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientAc
 }
 
 async fn restart_app(client: &Client, config: &Config) {
-    // Update the restart flag to false
-    let update_result = update_restart_app_flag(client, config).await;
-
-    if let Err(e) = update_result {
+    if let Err(e) = update_restart_app_flag(client, config).await {
         println!("Failed to update restart flag: {}", e);
         return;
     }
 
     println!("Restarting Signage Application...");
-
-    // Stop the MPV player
     let stop_mpv_output = Command::new("pkill").arg("mpv").output().await;
-
-    match stop_mpv_output {
-        Ok(output) if output.status.success() => {
-            println!("MPV player stopped successfully.");
-        }
-        Ok(output) => {
-            eprintln!(
-                "Failed to stop MPV player: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Err(e) => {
-            eprintln!("Failed to execute stop MPV command: {}", e);
-        }
+    if let Err(e) = stop_mpv_output {
+        println!("Failed to stop MPV player: {}", e);
     }
 
-    // Restart the signaged.service
     let restart_service_output = Command::new("sudo")
         .arg("systemctl")
         .arg("restart")
@@ -158,83 +120,45 @@ async fn restart_app(client: &Client, config: &Config) {
         .output()
         .await;
 
-    match restart_service_output {
-        Ok(output) if output.status.success() => {
-            println!("Signage service restarted successfully.");
-        }
-        Ok(output) => {
-            eprintln!(
-                "Failed to restart signage service: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-        Err(e) => {
-            eprintln!("Failed to execute restart command: {}", e);
-            return;
-        }
+    if let Err(e) = restart_service_output {
+        println!("Failed to restart signage service: {}", e);
     }
 }
 
-async fn update_restart_app_flag(
-    client: &Client,
-    config: &Config,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn update_restart_app_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/update-restart-app-device/{}", config.url, config.id);
-    println!("Updating restart app flag at URL: {}", url);
-    let response = client
+    client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
-        .json(&serde_json::json!({ "restart_app": false }))
+        .json(&json!({ "restart_app": false }))
         .send()
-        .await?;
-
-    if response.status().is_success() {
-        println!("Restart App flag successfully updated.");
-        Ok(())
-    } else {
-        Err(format!("Failed to update restart flag: {:?}", response.status()).into())
-    }
+        .await?
+        .error_for_status()?;
+    Ok(())
 }
 
 async fn restart_device(client: &Client, config: &Config) {
-    // Update the restart flag to false
-    let update_result = update_restart_flag(client, config).await;
-
-    if let Err(e) = update_result {
+    if let Err(e) = update_restart_flag(client, config).await {
         println!("Failed to update restart flag: {}", e);
         return;
     }
 
     println!("Restarting device...");
-    let status = Command::new("sudo").arg("reboot").status().await;
-
-    match status {
-        Ok(status) if status.success() => println!("Device is restarting..."),
-        Ok(status) => println!("Failed to restart device, exit code: {}", status),
-        Err(e) => println!("Failed to execute reboot command: {}", e),
+    if let Err(e) = Command::new("sudo").arg("reboot").status().await {
+        println!("Failed to restart device: {}", e);
     }
 }
 
-async fn update_restart_flag(
-    client: &Client,
-    config: &Config,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn update_restart_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/update-restart-device/{}", config.url, config.id);
-    println!("Updating screenshot flag at URL: {}", url);
-    let response = client
+    client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
-        .json(&serde_json::json!({ "restart": false }))
+        .json(&json!({ "restart": false }))
         .send()
-        .await?;
-
-    if response.status().is_success() {
-        println!("Restart flag successfully updated.");
-        Ok(())
-    } else {
-        Err(format!("Failed to update restart flag: {:?}", response.status()).into())
-    }
+        .await?
+        .error_for_status()?;
+    Ok(())
 }
 
 async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
