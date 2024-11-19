@@ -116,41 +116,6 @@ pub async fn write_json<T: Serialize>(json: &T, path: &str) -> Result<(), Box<dy
     Ok(())
 }
 
-/// Cleans up the signage directory by removing files not listed in playlist.txt
-pub async fn cleanup_directory(dir: &str) -> Result<(), Box<dyn Error>> {
-    // Read the playlist.txt file
-    let playlist_path = format!("{}/playlist.txt", dir);
-    let mut playlist_file = File::open(&playlist_path).await?;
-    let mut playlist_contents = String::new();
-    playlist_file.read_to_string(&mut playlist_contents).await?;
-
-    // Collect all filenames listed in playlist.txt
-    let playlist_files: Vec<String> = playlist_contents
-        .lines()
-        .map(|line| line.trim().to_string())
-        .collect();
-
-    // Read the directory contents
-    let mut dir_entries = fs::read_dir(dir).await?;
-
-    while let Some(entry) = dir_entries.next_entry().await? {
-        let path = entry.path();
-        if path.is_file() {
-            let filename = path.file_name().unwrap().to_string_lossy().to_string();
-            // Ignore playlist.txt and data.json
-            println!("Getting Files: {:?}", filename);
-            if filename != "playlist.txt" && filename != "data.json" {
-                // Delete the file if it's not in playlist.txt
-                if !playlist_files.iter().any(|f| f.contains(&filename)) {
-                    println!("Deleting file: {}", filename);
-                    fs::remove_file(path).await?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 pub fn set_display() {
     // Set the DISPLAY environment variable for the current process
     env::set_var("DISPLAY", ":0");
