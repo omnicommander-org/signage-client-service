@@ -18,66 +18,11 @@ pub struct Apikey {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Video {
-    pub id: String,
-    pub asset_url: String,
-}
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Updated {
     pub updated: Option<DateTime<Utc>>,
-}
-
-impl Video {
-    /// Downloads videos or images to `$HOME/.local/share/signage`
-    pub async fn download(&self, client: &Client) -> Result<String, Box<dyn std::error::Error>> {
-        // Extract the file extension from the URL
-        let path = Path::new(&self.asset_url);
-        let extension = path
-            .extension()
-            .and_then(std::ffi::OsStr::to_str)
-            .unwrap_or("bin");
-        // Clean up the directory after a successful download
-
-        let file_path = format!(
-            "{}/.local/share/signage/{}.{}",
-            std::env::var("HOME")?,
-            self.id,
-            extension
-        );
-
-        // Check if the file already exists
-        if Path::new(&file_path).exists() {
-            println!("File already exists: {}", file_path);
-            return Ok(file_path);
-        }
-
-        // Proceed with downloading the file
-        let mut stream = client.get(&self.asset_url).send().await?.bytes_stream();
-        let mut file = File::create(&file_path).await?;
-
-        while let Some(content) = stream.next().await {
-            tokio::io::copy(&mut content?.as_ref(), &mut file).await?;
-        }
-
-        println!("Downloaded to: {}", file_path);
-
-        Ok(file_path)
-    }
-
-    pub fn in_whitelist(&self) -> bool {
-        let whitelist = ["s3.amazonaws.com"];
-
-        for url in whitelist {
-            if self.asset_url.contains(url) {
-                return true;
-            } else {
-                println!("URL not in whitelist: {}", self.asset_url);
-            }
-        }
-
-        false
-    }
 }
 
 /// Loads json from `dir/filename` into `T`

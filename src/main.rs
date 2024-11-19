@@ -15,7 +15,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::time::{self, Duration};
-use util::{ set_display, Apikey, Updated, Video};
+use util::{ set_display, Apikey, Updated};
 use uuid::Uuid;
 
 mod config;
@@ -32,15 +32,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Load the configs
     config.load().await?;
 
+    // Wait for API key
+    while config.key.is_none() || config.key.as_ref().unwrap().is_empty() {
+        println!("API key not found in configuration. Retrying in 5 seconds...");
+        time::sleep(Duration::from_secs(5)).await;
+        config.load().await?;
+    }
+
+    println!("Using existing API key: {}", config.key.as_ref().unwrap());
+
     let _ = wait_for_api(&client, &config).await?;
-
-    println!("API key is not set. Requesting a new API key...");
-    config.key = Some(get_new_key(&client, &mut config).await?.key);
-    config.write().await?;
-
-
-
-    let mut interval = time::interval(Duration::from_secs(20));
     let mut metrics_interval = time::interval(Duration::from_secs(30));
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
@@ -95,24 +96,6 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
     Ok(true)
 }
 
-async fn get_new_key(client: &Client, config: &mut Config) -> Result<Apikey, Box<dyn Error>> {
-    println!("Loading configuration...");
-    config.load().await?;
-    println!("{}/get-new-key/{}", config.url, config.id);
-
-    let res: Apikey = client
-        .get(format!("{}/get-new-key/{}", config.url, config.id))
-        .basic_auth(&config.username, Some(&config.password))
-        .send()
-        .await?
-        .json()
-        .await?;
-
-    println!("Received new API key: {}", res.key);
-    config.key = Some(res.key.clone());
-    config.write().await?;
-    Ok(res)
-}
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ClientActions {
