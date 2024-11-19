@@ -1,0 +1,8 @@
+[Unit]
+Description=Digital Signage Daemon
+
+[Service]
+ExecStart=/usr/bin/signaged
+
+[Install]
+WantedBy=multi-user.target

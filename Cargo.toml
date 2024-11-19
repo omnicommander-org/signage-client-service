@@ -1,0 +1,23 @@
+[package]
+name = "signage-client"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[build]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[dependencies]
+anyhow = "1.0.74"
+chrono = { version = "0.4.26", features = ["serde"] }
+daemonize = "0.5.0"
+futures-util = "0.3.28"
+image = "0.25.2"
+reqwest = { version = "0.11.18", features = ["blocking", "json", "stream", "rustls", "tokio-rustls", "multipart"] }
+screenshots = "0.8.10"
+serde = { version = "1.0.183", features = ["derive"] }
+serde_json = "1.0.104"
+tokio = { version = "1.31.0", features = ["full"] }
+tokio-tungstenite = "0.23.1"
+uuid = { version = "1.0", features = ["serde", "v4"] }

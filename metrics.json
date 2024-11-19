@@ -1,0 +1,10 @@
+{
+    "client_id": "24f978c6-5479-407d-8cd9-3b0a7fd4d5e2",
+    "temp": "temp=35.5'C",
+    "cpuusage": "%Cpu(s): 14.3 us, 28.6 sy,  0.0 ni, 57.1 id,  0.0 wa,  0.0 hi,  0.0 si,  0.0 st",
+    "memory": "total        used        free      shared  buff/cache   available\nMem:           3.7Gi       1.2Gi       907Mi       170Mi       1.9Gi       2.5Gi\nSwap:          199Mi          0B       199Mi",
+    "diskusage": "Filesystem      Size  Used Avail Use% Mounted on\nudev            1.6G     0  1.6G   0% /dev\ntmpfs           380M  1.4M  378M   1% /run\n/dev/mmcblk0p2   58G   14G   42G  25% /\ntmpfs           1.9G   28M  1.9G   2% /dev/shm\ntmpfs           5.0M   16K  5.0M   1% /run/lock\n/dev/mmcblk0p1  510M   76M  435M  15% /boot/firmware\ntmpfs           380M   40K  380M   1% /run/user/1000",
+    "swapusage": "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n/var/swap                               file\t\t204796\t\t0\t\t-2",
+    "uptime": "21:08:19 up  6:27,  2 users,  load average: 0.46, 0.39, 0.30",
+    "mpvstatus": "MPV is not running"
+  }
