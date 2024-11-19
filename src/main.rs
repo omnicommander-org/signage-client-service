@@ -30,43 +30,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Load the configs
     config.load().await?;
 
-    // Check if API key exists
+    // Check if API key exists initially
     if config.key.is_none() || config.key.as_ref().unwrap().is_empty() {
         eprintln!("API key not found in configuration. Please set it manually.");
         return Ok(());
     }
 
-    println!("Using existing API key: {}", config.key.as_ref().unwrap());
-
-    let _ = wait_for_api(&client, &config).await?;
     let mut metrics_interval = time::interval(Duration::from_secs(30));
 
     loop {
         tokio::select! {
             _ = metrics_interval.tick() => {
-                let metrics = collect_and_write_metrics(&config.id).await;
-                println!("Running Metrics");
-                send_metrics(&config.id, &metrics, config.key.as_ref().unwrap(), &config);
+                // Reload configuration to get the latest API key
+                if let Err(e) = config.load().await {
+                    eprintln!("Failed to reload configuration: {}", e);
+                    continue; // Skip this iteration if config reload fails
+                }
 
-                // Check client actions
-                let actions = get_client_actions(&client, &config).await;
-                if let Some(actions) = actions {
-                    if actions.restart_app {
-                        restart_app(&client, &config).await;
-                    }
-                    if actions.restart {
-                        restart_device(&client, &config).await;
-                    }
-                    if actions.screenshot {
-                        if let Err(e) = take_screenshot(&client, &config).await {
-                            eprintln!("Failed to take screenshot: {}", e);
+                if let Some(api_key) = &config.key {
+                    println!("Using current API key: {}", api_key);
+
+                    // Collect and send metrics
+                    let metrics = collect_and_write_metrics(&config.id).await;
+                    println!("Running Metrics");
+                    send_metrics(&config.id, &metrics, api_key, &config);
+
+                    // Check client actions
+                    if let Some(actions) = get_client_actions(&client, &config).await {
+                        if actions.restart_app {
+                            restart_app(&client, &config).await;
+                        }
+                        if actions.restart {
+                            restart_device(&client, &config).await;
+                        }
+                        if actions.screenshot {
+                            if let Err(e) = take_screenshot(&client, &config).await {
+                                eprintln!("Failed to take screenshot: {}", e);
+                            }
                         }
                     }
+                } else {
+                    eprintln!("API key is missing. Skipping operations.");
                 }
             }
         }
     }
 }
+
 
 async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
     let mut interval = time::interval(Duration::from_secs(1));
