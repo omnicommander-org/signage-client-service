@@ -21,6 +21,7 @@ mod config;
 mod reporting;
 mod util;
 
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     set_display();
@@ -117,6 +118,42 @@ async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientAc
         res.json::<ClientActions>().await.ok()
     } else {
         println!("Failed to retrieve client actions: {:?}", res.status());
+        None
+    }
+}
+
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClientPlaylistSchedule {
+    pub id: Uuid,
+    pub playlist_id: Uuid,
+    pub device_id: Uuid,
+    pub organization_id: Uuid,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub playlist_name: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+pub struct Config {
+    pub url: String,
+    pub id: Uuid,
+    pub key: Option<String>,
+}
+
+async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Option<Vec<ClientPlaylistSchedule>> {
+    let res = client
+        .get(format!("{}/client-playlists_schedule/{}", config.url, config.id))
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .send()
+        .await
+        .ok()?;
+
+    if res.status().is_success() {
+        res.json::<Vec<ClientPlaylistSchedule>>().await.ok() // Deserialize to Vec<ClientPlaylistSchedule>
+    } else {
+        println!("Failed to retrieve client playlist schedule: {:?}", res.status());
         None
     }
 }
