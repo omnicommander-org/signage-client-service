@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, Duration};
 use config::Config;
 use data::Data;
 use reporting::{collect_and_write_metrics, send_metrics};
@@ -13,7 +13,7 @@ use std::str;
 use std::{boxed::Box, error::Error};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::{self, Duration};
+use tokio::time::{self};
 use util::{set_display};
 use uuid::Uuid;
 
@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     //Check for playlist schedule updates
                      println!("Checking Schudules");
                      if let Some(schedules) = get_client_playlist_schedule(&client, &config).await {
-                        if let Err(e) = process_schedules(schedules).await {
+                        if let Err(e) = process_schedules(&client, &config, schedules).await {
                             eprintln!("Error processing schedules: {}", e);
                         }
                     }
@@ -208,7 +208,11 @@ async fn restart_app(client: &Client, config: &Config) {
     }
 }
 
-async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(), Box<dyn Error>> {
+async fn process_schedules(
+    client: &Client,
+    config: &Config,
+    schedules: Vec<ClientPlaylistSchedule>
+) -> Result<(), Box<dyn Error>> {
     let now = Utc::now();
     println!("Checking schedules at: {}", now);
 
@@ -225,18 +229,23 @@ async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(),
     for schedule in &schedules {
         if now >= schedule.start_time && now <= schedule.end_time {
             println!("Playlist is active: {}", schedule.playlist_id);
+
             // If playlist hasn't changed, do nothing
             if existing_playlist == Some(schedule.playlist_id) {
                 println!("Playlist has not changed. No update needed.");
                 return Ok(());
             }
+
             // Otherwise, update current_playlist and last_update
             println!("Updating current playlist to: {}", schedule.playlist_id);
             data.current_playlist = Some(schedule.playlist_id);
-            data.last_update = Some(Utc::now() - Duration::days(365));
-            if let Err(e) = update_playlist_id_flag(&client, &config, new_playlist_id).await {
+            data.last_update = Some(Utc::now() - Duration::days(365)); // One year before
+
+            // Update playlist ID in backend
+            if let Err(e) = update_playlist_id(client, config, schedule.playlist_id).await {
                 eprintln!("Error updating playlist ID: {}", e);
             }
+
             // Preserve `videos` and write updated data.json
             if let Err(e) = data.write().await {
                 eprintln!("Failed to write data.json: {}", e);
@@ -248,6 +257,7 @@ async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(),
 
     Ok(())
 }
+
 
 async fn update_playlist_id(
     client: &Client,
