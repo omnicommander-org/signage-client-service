@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use config::Config;
-
+use data::Data;
 use reporting::{collect_and_write_metrics, send_metrics};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Client, StatusCode};
@@ -20,7 +20,7 @@ use uuid::Uuid;
 mod config;
 mod reporting;
 mod util;
-
+mod data;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -72,14 +72,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
 
                     //Check for playlist schedule updates
-                     // Check client schedules
                      println!("Checking Schudules");
                      if let Some(schedules) = get_client_playlist_schedule(&client, &config).await {
-                        println!("Current Playlist Schedules: {:?}", schedules);
-                        process_schedules(schedules).await;
-                        /* if actions.restart_app {
-                            restart_app(&client, &config).await;
-                        } */
+                        if let Err(e) = process_schedules(schedules).await {
+                            eprintln!("Error processing schedules: {}", e);
+                        }
                     }
                 } else {
                     eprintln!("API key is missing. Skipping operations.");
@@ -212,18 +209,49 @@ async fn restart_app(client: &Client, config: &Config) {
     }
 }
 
-async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) {
+use chrono::Utc;
+use crate::data::Data;
+use std::error::Error;
+
+async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(), Box<dyn Error>> {
     // Get the current UTC time
     let now = Utc::now();
 
     println!("Checking schedules at: {}", now);
 
+    // Load data.json
+    let mut data = Data::new();
+    if let Err(e) = data.load().await {
+        eprintln!("Failed to load data.json: {}", e);
+        return Err(e);
+    }
+
+    // Extract current playlist if it exists
+    let mut current_playlist: Option<Uuid> = None;
+
     for schedule in &schedules {
-        // Check if the current time is within the start_time and end_time range
         if now >= schedule.start_time && now <= schedule.end_time {
             println!("Playlist is active: {}", schedule.playlist_id);
+
+            // Compare with current playlist
+            if let Some(existing_playlist) = current_playlist {
+                if existing_playlist == schedule.playlist_id {
+                    println!("Playlist has not changed. No update needed.");
+                    return Ok(());
+                }
+            }
+
+            // Update current_playlist and save data.json
+            current_playlist = Some(schedule.playlist_id);
+            println!("Updating current playlist to: {}", schedule.playlist_id);
+
+            data.videos.clear(); // Reset videos (if necessary)
+            data.last_update = Some(now); // Update last update time
+            data.write().await?;
         }
     }
+
+    Ok(())
 }
 
 
