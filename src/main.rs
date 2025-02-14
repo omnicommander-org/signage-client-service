@@ -255,7 +255,7 @@ async fn process_schedules(
 
             let restart_service_output = Command::new("sudo")
                 .arg("systemctl")
-                .arg("restart")
+                .arg("stop")
                 .arg("signaged.service")
                 .output()
                 .await;
