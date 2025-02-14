@@ -210,45 +210,46 @@ async fn restart_app(client: &Client, config: &Config) {
 }
 
 async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(), Box<dyn Error>> {
-    // Get the current UTC time
     let now = Utc::now();
-
     println!("Checking schedules at: {}", now);
 
-    // Load data.json
+    // Load existing data.json
     let mut data = Data::new();
     if let Err(e) = data.load().await {
         eprintln!("Failed to load data.json: {}", e);
         return Err(e);
     }
 
-    // Extract current playlist if it exists
-    let mut current_playlist: Option<Uuid> = None;
+    // Check the currently stored playlist
+    let existing_playlist = data.current_playlist;
 
     for schedule in &schedules {
         if now >= schedule.start_time && now <= schedule.end_time {
             println!("Playlist is active: {}", schedule.playlist_id);
 
-            // Compare with current playlist
-            if let Some(existing_playlist) = current_playlist {
-                if existing_playlist == schedule.playlist_id {
-                    println!("Playlist has not changed. No update needed.");
-                    return Ok(());
-                }
+            // If playlist hasn't changed, do nothing
+            if existing_playlist == Some(schedule.playlist_id) {
+                println!("Playlist has not changed. No update needed.");
+                return Ok(());
             }
 
-            // Update current_playlist and save data.json
-            current_playlist = Some(schedule.playlist_id);
+            // Otherwise, update current_playlist and last_update
             println!("Updating current playlist to: {}", schedule.playlist_id);
+            data.current_playlist = Some(schedule.playlist_id);
+            data.last_update = Some(now);
 
-            data.videos.clear(); // Reset videos (if necessary)
-            data.last_update = Some(now); // Update last update time
-            data.write().await?;
+            // Preserve `videos` and write updated data.json
+            if let Err(e) = data.write().await {
+                eprintln!("Failed to write data.json: {}", e);
+                return Err(e);
+            }
+            println!("Updated data.json successfully.");
         }
     }
 
     Ok(())
 }
+
 
 
 async fn update_restart_app_flag(
