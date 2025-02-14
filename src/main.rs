@@ -136,12 +136,6 @@ pub struct ClientPlaylistSchedule {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
-pub struct Config {
-    pub url: String,
-    pub id: Uuid,
-    pub key: Option<String>,
-}
-
 async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Option<Vec<ClientPlaylistSchedule>> {
     let res = client
         .get(format!("{}/client-playlists_schedule/{}", config.url, config.id))
