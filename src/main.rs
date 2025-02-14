@@ -253,34 +253,32 @@ async fn process_schedules(
             }
             println!("Updated data.json successfully. Restarting OMNIPLAYER");
 
-            let restart_service_output = Command::new("sudo")
-                .arg("systemctl")
-                .arg("stop")
-                .arg("signaged.service")
-                .output()
-                .await;
-
-            match restart_service_output {
-                Ok(output) if output.status.success() => {
-                    println!("Signaged service restarted successfully.");
-                }
-                Ok(output) => {
-                    eprintln!(
-                        "Failed to restart signaged service: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
-                Err(e) => {
-                    eprintln!("Failed to execute restart command: {}", e);
-                }
-            }
-
 
         }else{
 
         }
     }
+    let restart_service_output = Command::new("sudo")
+    .arg("systemctl")
+    .arg("restart")
+    .arg("signaged.service")
+    .output()
+    .await;
 
+    match restart_service_output {
+        Ok(output) if output.status.success() => {
+            println!("Signaged service restarted successfully.");
+        }
+        Ok(output) => {
+            eprintln!(
+                "Failed to restart signaged service: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to execute restart command: {}", e);
+        }
+    }
     Ok(())
 }
 
