@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, Duration};
 use config::Config;
 use data::Data;
 use reporting::{collect_and_write_metrics, send_metrics};
@@ -85,7 +85,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 }
-
 
 async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
     let mut interval = time::interval(Duration::from_secs(1));
@@ -226,18 +225,18 @@ async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(),
     for schedule in &schedules {
         if now >= schedule.start_time && now <= schedule.end_time {
             println!("Playlist is active: {}", schedule.playlist_id);
-
             // If playlist hasn't changed, do nothing
             if existing_playlist == Some(schedule.playlist_id) {
                 println!("Playlist has not changed. No update needed.");
                 return Ok(());
             }
-
             // Otherwise, update current_playlist and last_update
             println!("Updating current playlist to: {}", schedule.playlist_id);
             data.current_playlist = Some(schedule.playlist_id);
-            data.last_update = Some(now);
-
+            data.last_update = Some(Utc::now() - Duration::days(365));
+            if let Err(e) = update_playlist_id_flag(&client, &config, new_playlist_id).await {
+                eprintln!("Error updating playlist ID: {}", e);
+            }
             // Preserve `videos` and write updated data.json
             if let Err(e) = data.write().await {
                 eprintln!("Failed to write data.json: {}", e);
@@ -250,6 +249,28 @@ async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(),
     Ok(())
 }
 
+async fn update_playlist_id(
+    client: &Client,
+    config: &Config,
+    playlist_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("{}/update-client-playlist/{}", config.url, config.id);
+    println!("Updating playlist ID at URL: {}", url);
+
+    let response = client
+        .post(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .json(&serde_json::json!({ "playlist_id": playlist_id }))
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        println!("Playlist ID successfully updated.");
+        Ok(())
+    } else {
+        Err(format!("Failed to update playlist ID: {:?}", response.status()).into())
+    }
+}
 
 
 async fn update_restart_app_flag(
