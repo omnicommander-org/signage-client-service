@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Utc};
 use config::Config;
 use data::Data;
 use reporting::{collect_and_write_metrics, send_metrics};
