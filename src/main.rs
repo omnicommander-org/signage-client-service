@@ -209,10 +209,6 @@ async fn restart_app(client: &Client, config: &Config) {
     }
 }
 
-use chrono::Utc;
-use crate::data::Data;
-use std::error::Error;
-
 async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) -> Result<(), Box<dyn Error>> {
     // Get the current UTC time
     let now = Utc::now();
