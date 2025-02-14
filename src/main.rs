@@ -70,6 +70,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             }
                         }
                     }
+
+                    //Check for playlist schedule updates
+                     // Check client schedules
+                     println!("Checking Schudules");
+                     if let Some(schedules) = get_client_playlist_schedule(&client, &config).await {
+                        println!("Current Playlist Schedules: {}", schedules);
+                        /* if actions.restart_app {
+                            restart_app(&client, &config).await;
+                        } */
+                    }
                 } else {
                     eprintln!("API key is missing. Skipping operations.");
                 }
