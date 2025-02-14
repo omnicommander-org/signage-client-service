@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc, Duration};
+use chrono::{DateTime, Utc, Duration as ChronoDuration}; 
 use config::Config;
 use data::Data;
 use reporting::{collect_and_write_metrics, send_metrics};
@@ -13,7 +13,7 @@ use std::str;
 use std::{boxed::Box, error::Error};
 use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::{self};
+use tokio::time::{self, Duration as TokioDuration};
 use util::{set_display};
 use uuid::Uuid;
 
@@ -37,7 +37,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let mut metrics_interval = time::interval(Duration::from_secs(30));
+    let mut metrics_interval = time::interval(TokioDuration::from_secs(30)); 
 
     loop {
         tokio::select! {
@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
-    let mut interval = time::interval(Duration::from_secs(1));
+    let mut interval = time::interval(TokioDuration::from_secs(1)); 
     loop {
         let res = client.get(format!("{}/health", config.url)).send().await;
         if let Ok(response) = res {
@@ -95,7 +95,7 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
                 StatusCode::OK => break,
                 StatusCode::INTERNAL_SERVER_ERROR => {
                     println!("Server error. Retrying in 2 minutes...");
-                    time::interval(Duration::from_secs(120)).tick().await;
+                    time::interval(TokioDuration::from_secs(120)).tick().await;
                 }
                 _ => (),
             }
@@ -239,7 +239,7 @@ async fn process_schedules(
             // Otherwise, update current_playlist and last_update
             println!("Updating current playlist to: {}", schedule.playlist_id);
             data.current_playlist = Some(schedule.playlist_id);
-            data.last_update = Some(Utc::now() - Duration::days(365)); // One year before
+            data.last_update = Some(Utc::now() - ChronoDuration::days(365)); 
 
             // Update playlist ID in backend
             if let Err(e) = update_playlist_id(client, config, schedule.playlist_id).await {
