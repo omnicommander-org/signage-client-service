@@ -76,6 +76,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                      println!("Checking Schudules");
                      if let Some(schedules) = get_client_playlist_schedule(&client, &config).await {
                         println!("Current Playlist Schedules: {:?}", schedules);
+                        process_schedules(schedules).await;
                         /* if actions.restart_app {
                             restart_app(&client, &config).await;
                         } */
@@ -210,6 +211,21 @@ async fn restart_app(client: &Client, config: &Config) {
         }
     }
 }
+
+async fn process_schedules(schedules: Vec<ClientPlaylistSchedule>) {
+    // Get the current UTC time
+    let now = Utc::now();
+
+    println!("Checking schedules at: {}", now);
+
+    for schedule in &schedules {
+        // Check if the current time is within the start_time and end_time range
+        if now >= schedule.start_time && now <= schedule.end_time {
+            println!("Playlist is active: {}", schedule.playlist_id);
+        }
+    }
+}
+
 
 async fn update_restart_app_flag(
     client: &Client,
