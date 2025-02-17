@@ -240,7 +240,7 @@ async fn process_schedules(
             println!("Updating current playlist to: {}", schedule.playlist_id);
             data.current_playlist = Some(schedule.playlist_id);
             data.last_update = Some(Utc::now() - ChronoDuration::days(365)); 
-            data.update_content = true;
+            data.update_content = Some(true);
             // Update playlist ID in backend
             if let Err(e) = update_playlist_id(client, config, schedule.playlist_id).await {
                 eprintln!("Error updating playlist ID: {}", e);
