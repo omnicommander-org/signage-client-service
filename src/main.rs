@@ -239,7 +239,6 @@ async fn process_schedules(
             // Otherwise, update current_playlist and last_update
             println!("Updating current playlist to: {}", schedule.playlist_id);
             data.current_playlist = Some(schedule.playlist_id);
-            data.last_update = Some(Utc::now() - ChronoDuration::days(365)); 
             data.update_content = Some(true);
             // Update playlist ID in backend
             if let Err(e) = update_playlist_id(client, config, schedule.playlist_id).await {
@@ -255,28 +254,7 @@ async fn process_schedules(
 
 
         }else{
-
-        }
-    }
-    let restart_service_output = Command::new("sudo")
-    .arg("systemctl")
-    .arg("restart")
-    .arg("signaged.service")
-    .output()
-    .await;
-
-    match restart_service_output {
-        Ok(output) if output.status.success() => {
-            println!("Signaged service restarted successfully.");
-        }
-        Ok(output) => {
-            eprintln!(
-                "Failed to restart signaged service: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Err(e) => {
-            eprintln!("Failed to execute restart command: {}", e);
+            println!("Playlist is NOT ACTIVE: {}", schedule.playlist_id);
         }
     }
     Ok(())
