@@ -2,7 +2,7 @@ use crate::util::{load_json, write_json};
 use serde::{Deserialize, Serialize};
 use std::{boxed::Box, env, error::Error};
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Config {
     pub url: String,
     pub id: String,

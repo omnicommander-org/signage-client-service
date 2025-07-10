@@ -9,6 +9,10 @@ pub struct Data {
     pub videos: Vec<Video>,
     pub last_update: Option<DateTime<Utc>>,
     pub current_playlist: Option<Uuid>,
+    pub active_schedule_ends: Option<String>,
+    pub next_schedule_starts: Option<String>,
+    pub next_playlist_id: Option<Uuid>,
+    pub fallback_playlist_id: Option<Uuid>,
     pub update_content: Option<bool>,
 }
 impl Data {

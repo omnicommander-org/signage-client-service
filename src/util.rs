@@ -21,11 +21,32 @@ pub struct Apikey {
 pub struct Video {
     pub id: String,
     pub asset_url: String,
+    #[serde(default)]
+    pub asset_order: u8,
+    #[serde(default)]
+    pub asset_name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Updated {
     pub updated: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClientTimelineScheduleResponse {
+    pub active_playlist_id: Option<String>,
+    pub fallback_playlist_id: Option<String>,
+    pub schedule_ends_at: Option<String>,
+    pub next_schedule_starts_at: Option<String>,
+    pub next_playlist_id: Option<String>,
+    pub update_flags: Option<ClientUpdateFlagsResponse>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClientUpdateFlagsResponse {
+    pub playlist_update_needed: bool,
+    pub schedule_update_needed: bool,
+    pub content_update_needed: bool,
 }
 
 impl Video {
@@ -117,7 +138,7 @@ pub async fn write_json<T: Serialize>(json: &T, path: &str) -> Result<(), Box<dy
 }
 
 /// Cleans up the signage directory by removing files not listed in playlist.txt
-pub async fn cleanup_directory(dir: &str) -> Result<(), Box<dyn Error>> {
+pub async fn cleanup_directory(dir: &str, _videos: &[Video]) -> Result<(), Box<dyn Error>> {
     // Read the playlist.txt file
     let playlist_path = format!("{}/playlist.txt", dir);
     let mut playlist_file = File::open(&playlist_path).await?;
