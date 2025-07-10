@@ -1798,7 +1798,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "signaged"
+name = "signaged-util"
 version = "0.1.0"
 dependencies = [
  "anyhow",
