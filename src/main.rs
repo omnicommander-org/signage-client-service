@@ -113,9 +113,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let _ = wait_for_api(&client, &config).await?;
 
-    println!("API key is not set. Requesting a new API key...");
-    config.key = Some(get_new_key(&client, &mut config).await?.key);
-    config.write().await?;
+    // Service should use existing API key from main client, not request new ones
+    if config.key.is_none() {
+        println!("⚠️ No API key found in config. Make sure the main signage-client is running and has obtained an API key.");
+        return Err("No API key available".into());
+    } else {
+        println!("✅ Using existing API key from config");
+    }
 
     // Get the videos if we've never updated
     if data.last_update.is_none() {
@@ -303,15 +307,13 @@ async fn receive_videos(
 ) -> Result<Vec<Video>, Box<dyn Error>> {
     let url = format!("{}/recieve-videos/{}", config.url, config.id);
 
-    let new_key = get_new_key(client, config).await?;
-    let auth_token = new_key.key;
     let response = client
         .get(&url)
         .header("Accept", "application/json")
         .header("Cache-Control", "no-cache")
         .header("Accept-Encoding", "gzip, deflate, br")
         .header("Connection", "keep-alive")
-        .header("APIKEY", auth_token)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await?;
 
@@ -371,16 +373,13 @@ async fn check_timeline_schedule(
 ) -> Result<util::ClientTimelineScheduleResponse, Box<dyn Error>> {
     let url = format!("{}/client-timeline-schedule/{}", config.url, config.id);
     
-    let new_key = get_new_key(client, config).await?;
-    let auth_token = new_key.key;
-    
     let response = client
         .get(&url)
         .header("Accept", "application/json")
         .header("Cache-Control", "no-cache")
         .header("Accept-Encoding", "gzip, deflate, br")
         .header("Connection", "keep-alive")
-        .header("APIKEY", auth_token)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
         .await?;
 
@@ -493,9 +492,6 @@ async fn acknowledge_updates(
 ) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/client-update-flags/{}", config.url, config.id);
     
-    let new_key = get_new_key(client, config).await?;
-    let auth_token = new_key.key;
-    
     let ack_payload = serde_json::json!({
         "content_update_needed": false,
         "playlist_update_needed": false,
@@ -506,7 +502,7 @@ async fn acknowledge_updates(
         .post(&url)
         .header("Accept", "application/json")
         .header("Content-Type", "application/json")
-        .header("APIKEY", auth_token)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
         .json(&ack_payload)
         .send()
         .await?;
