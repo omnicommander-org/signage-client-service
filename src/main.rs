@@ -1,261 +1,93 @@
-
-
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, Duration as ChronoDuration}; 
 use config::Config;
 use data::Data;
+use reporting::{collect_and_write_metrics, send_metrics};
+use reqwest::multipart::{Form, Part};
 use reqwest::{Client, StatusCode};
-use std::{boxed::Box, error::Error, path::Path};
-use tokio::io::AsyncWriteExt;
-use tokio::process::{Child, Command};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::env;
+use std::fs::File;
+use std::io::Read;
+use std::str;
+use std::{boxed::Box, error::Error};
+use tokio::process::Command;
 use tokio::signal::unix::{signal, SignalKind};
-use tokio::time::{self, Duration};
-use util::{cleanup_directory, set_display, Apikey, Updated, Video};
+use tokio::time::{self, Duration as TokioDuration};
+use util::{set_display};
 use uuid::Uuid;
 
 mod config;
-mod data;
+mod reporting;
 mod util;
-
-/// Kill any existing MPV processes to prevent conflicts
-async fn cleanup_mpv_processes() -> Result<(), Box<dyn Error>> {
-    println!("🧹 Cleaning up any existing MPV processes...");
-    
-    // Kill all MPV processes
-    let output = Command::new("pkill")
-        .args(&["-f", "mpv"])
-        .output()
-        .await;
-    
-    match output {
-        Ok(result) => {
-            if result.status.success() {
-                println!("✅ MPV processes cleaned up successfully");
-            } else {
-                println!("ℹ️ No existing MPV processes found to clean up");
-            }
-        }
-        Err(e) => {
-            println!("⚠️ Failed to clean up MPV processes: {}", e);
-            // Don't fail the whole process, just log the warning
-        }
-    }
-    
-    // Give a small delay to ensure processes are fully terminated
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    
-    Ok(())
-}
-
-/// Comprehensive cleanup at startup to ensure clean state
-async fn startup_cleanup() -> Result<(), Box<dyn Error>> {
-    println!("🧹 Performing startup cleanup...");
-    
-    // Kill all MPV processes
-    cleanup_mpv_processes().await?;
-    
-    // Clean up any stale socket files
-    let socket_path = "/tmp/mpvsocket";
-    if Path::new(socket_path).exists() {
-        if let Err(e) = tokio::fs::remove_file(socket_path).await {
-            println!("⚠️ Failed to remove stale socket file: {}", e);
-        } else {
-            println!("✅ Removed stale socket file");
-        }
-    }
-    
-    println!("✅ Startup cleanup completed");
-    Ok(())
-}
-
-async fn start_mpv() -> Result<Child, Box<dyn Error>> {
-    // Clean up any existing MPV processes first
-    cleanup_mpv_processes().await?;
-    
-    let image_display_duration = 10;
-    let child = Command::new("mpv")
-        .arg("--loop-playlist=inf")
-        .arg("--volume=-1")
-        .arg("--no-terminal")
-        .arg("--fullscreen")
-        .arg("--input-ipc-server=/tmp/mpvsocket")
-        .arg(format!(
-            "--image-display-duration={}",
-            image_display_duration
-        ))
-        .arg(format!(
-            "--playlist={}/.local/share/signage/playlist.txt",
-            std::env::var("HOME")?
-        ))
-        .spawn()?;
-
-    Ok(child)
-}
+mod data;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     set_display();
-    
-    // Perform comprehensive cleanup at startup
-    startup_cleanup().await?;
-    
     let mut config = Config::new();
-    let mut data = Data::new();
     let client = Client::new();
 
     // Load the configs
-    println!("Loading configuration...");
     config.load().await?;
-    println!("Loaded configuration: {:?}", config);
-    println!("Loading data...");
-    data.load().await?;
 
-    let mut mpv = start_mpv().await?;
-
-    let _ = wait_for_api(&client, &config).await?;
-
-    // Service should use existing API key from main client, not request new ones
-    if config.key.is_none() {
-        println!("⚠️ No API key found in config. Make sure the main signage-client is running and has obtained an API key.");
-        return Err("No API key available".into());
-    } else {
-        println!("✅ Using existing API key from config");
+    // Check if API key exists initially
+    if config.key.is_none() || config.key.as_ref().unwrap().is_empty() {
+        eprintln!("API key not found in configuration. Please set it manually.");
+        return Ok(());
     }
 
-    // Get the videos if we've never updated
-    if data.last_update.is_none() {
-        let updated = sync(&client, &config).await?;
-        update_videos(&client, &mut config, &mut data, updated).await?;
-        println!("Data Updated: {:?}", updated);
-    }
-    if data.update_content.unwrap_or(false) {
-        let updated = sync(&client, &config).await?;
-        update_videos(&client, &mut config, &mut data, updated).await?;
-        println!("Data Updated: {:?}", updated);
-    }
-    
-
-    // Initialize with default polling interval
-    let mut poll_interval = Duration::from_secs(60);
-    let mut interval = time::interval(poll_interval);
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut hup = signal(SignalKind::hangup())?;
-
-    mpv.kill().await?;
+    let mut metrics_interval = time::interval(TokioDuration::from_secs(30)); 
 
     loop {
         tokio::select! {
-            _ = interval.tick() => {
-                println!("\n=== Checking for updates ===");
-                let mut content_updated = false;
-                
-                // Try new schedule-aware system first
-                match check_timeline_schedule(&client, &mut config).await {
-                    Ok(schedule_response) => {
-                        println!("✅ Using timeline schedule system");
-                        
-                        // Process the schedule response
-                        content_updated = process_schedule_response(
-                            &client, 
-                            &mut config, 
-                            &mut data, 
-                            schedule_response.clone()
-                        ).await?;
-                        
-                        // Calculate optimal polling interval based on schedule timing
-                        let new_interval = calculate_poll_interval(&schedule_response);
-                        if new_interval != poll_interval {
-                            poll_interval = new_interval;
-                            interval = time::interval(poll_interval);
-                            println!("📊 Updated polling interval to {:?}", poll_interval);
-                        }
-                    }
-                    Err(err) => {
-                        println!("⚠️ Schedule check failed: {}, falling back to legacy sync", err);
-                        
-                        // Fall back to legacy sync system
-                        let updated = sync(&client, &config).await?;
-                        match (updated, data.last_update, data.update_content) {
-                            (Some(updated), Some(last_update), _) if updated > last_update => {
-                                println!("🔄 Legacy update detected");
-                                update_videos(&client, &mut config, &mut data, Some(updated)).await?;
-                                content_updated = true;
-                            }
-                            (Some(updated), None, _) => {
-                                println!("🔄 Legacy initial update");
-                                update_videos(&client, &mut config, &mut data, Some(updated)).await?;
-                                content_updated = true;
-                            }
-                            _ => {
-                                println!("📋 No legacy updates available");
-                            }
-                        }
-                        
-                        // Check legacy update_content flag
-                        if data.update_content.unwrap_or(false) {
-                            let updated = sync(&client, &config).await?;
-                            update_videos(&client, &mut config, &mut data, updated).await?;
-                            content_updated = true;
-                            println!("🔄 Legacy content flag update");
-                        }
-                        
-                        // Use default polling for legacy fallback
-                        if poll_interval != Duration::from_secs(20) {
-                            poll_interval = Duration::from_secs(20);
-                            interval = time::interval(poll_interval);
-                            println!("📊 Using legacy polling interval: 20s");
-                        }
-                    }
+            _ = metrics_interval.tick() => {
+                // Reload configuration to get the latest API key
+                if let Err(e) = config.load().await {
+                    eprintln!("Failed to reload configuration: {}", e);
+                    continue; // Skip this iteration if config reload fails
                 }
-                
-                if content_updated {
-                    println!("✅ Content updated successfully");
-                    
-                    // Force MPV restart to pick up new playlist immediately
-                    println!("🔄 Restarting MPV to load new playlist...");
-                    mpv.kill().await?;
-                    mpv = start_mpv().await?;
-                    println!("🎬 MPV restarted with new playlist");
+
+                if let Some(api_key) = &config.key {
+                    println!("Using current API key: {}", api_key);
+
+                    // Collect and send metrics
+                    let metrics = collect_and_write_metrics(&config.id).await;
+                    println!("Running Metrics");
+                    send_metrics(&config.id, &metrics, api_key, &config);
+
+                    // Check client actions
+                    if let Some(actions) = get_client_actions(&client, &config).await {
+                        if actions.restart_app {
+                            restart_app(&client, &config).await;
+                        }
+                        if actions.restart {
+                            restart_device(&client, &config).await;
+                        }
+                        if actions.screenshot {
+                            if let Err(e) = take_screenshot(&client, &config).await {
+                                eprintln!("Failed to take screenshot: {}", e);
+                            }
+                        }
+                    }
+
+                    //Check for playlist schedule updates
+                     println!("Checking Schudules");
+                     if let Some(schedules) = get_client_playlist_schedule(&client, &config).await {
+                        if let Err(e) = process_schedules(&client, &config, schedules).await {
+                            eprintln!("Error processing schedules: {}", e);
+                        }
+                    }
                 } else {
-                    println!("📋 No content changes needed");
+                    eprintln!("API key is missing. Skipping operations.");
                 }
-
-                // Restart mpv if it exits
-                match mpv.try_wait() {
-                    Ok(Some(_)) => {
-                        mpv = start_mpv().await?;
-                        println!("🎬 Restarted mpv process");
-                    },
-                    Ok(None) => (),
-                    Err(error) => eprintln!("❌ Error waiting for mpv process: {error}"),
-                }
-
-                // Avoid restarting mpv too frequently
-                time::sleep(Duration::from_secs(10)).await;
-            }
-            _ = terminate.recv() => {
-                println!("Received SIGTERM, terminating...");
-                mpv.kill().await?;
-                break;
-            }
-            _ = interrupt.recv() => {
-                println!("Received SIGINT, terminating...");
-                mpv.kill().await?;
-                break;
-            }
-            _ = hup.recv() => {
-                println!("Received SIGHUP, reloading configuration...");
-                config.load().await?;
-                data.load().await?;
             }
         }
     }
-
-    Ok(())
 }
 
 async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn Error>> {
-    let mut interval = time::interval(Duration::from_secs(1));
+    let mut interval = time::interval(TokioDuration::from_secs(1)); 
     loop {
         let res = client.get(format!("{}/health", config.url)).send().await;
         if let Ok(response) = res {
@@ -263,7 +95,7 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
                 StatusCode::OK => break,
                 StatusCode::INTERNAL_SERVER_ERROR => {
                     println!("Server error. Retrying in 2 minutes...");
-                    time::interval(Duration::from_secs(120)).tick().await;
+                    time::interval(TokioDuration::from_secs(120)).tick().await;
                 }
                 _ => (),
             }
@@ -273,247 +105,364 @@ async fn wait_for_api(client: &Client, config: &Config) -> Result<bool, Box<dyn 
     Ok(true)
 }
 
-async fn get_new_key(client: &Client, config: &mut Config) -> Result<Apikey, Box<dyn Error>> {
-    println!("Loading configuration...");
-    config.load().await?;
-    println!("Requesting new key from: {}/get-new-key/{}", config.url, config.id);
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClientActions {
+    pub client_id: Uuid,
+    pub restart_app: bool,
+    pub restart: bool,
+    pub screenshot: bool,
+}
 
+async fn get_client_actions(client: &Client, config: &Config) -> Option<ClientActions> {
     let res = client
-        .get(format!("{}/get-new-key/{}", config.url, config.id))
-        .send()
-        .await?;
-
-    match res.status() {
-        StatusCode::OK => {
-            let text = res.text().await?;
-            let key: Apikey = serde_json::from_str(&text)?;
-            Ok(key)
-        }
-        _ => Err(format!("Failed to get new key: {}", res.status()).into()),
-    }
-}
-
-async fn sync(client: &Client, config: &Config) -> Result<Option<DateTime<Utc>>, Box<dyn Error>> {
-    let url = format!("{}/sync/{}", config.url, config.id);
-    let response = client.get(&url).send().await?;
-    let text = response.text().await?;
-    let res: Updated = serde_json::from_str(&text)?;
-    Ok(res.updated)
-}
-
-async fn receive_videos(
-    client: &Client,
-    config: &mut Config,
-) -> Result<Vec<Video>, Box<dyn Error>> {
-    let url = format!("{}/recieve-videos/{}", config.url, config.id);
-
-    let response = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .header("Cache-Control", "no-cache")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .header("Connection", "keep-alive")
+        .get(format!("{}/client-actions/{}", config.url, config.id))
         .header("APIKEY", config.key.clone().unwrap_or_default())
         .send()
-        .await?;
+        .await
+        .ok()?;
 
-    let status = response.status();
-    let text = response.text().await?;
-    if status.is_success() {
-        println!("Raw response: {}", text);
-        let res: Vec<Video> = serde_json::from_str(&text)?;
-        Ok(res)
+    if res.status().is_success() {
+        res.json::<ClientActions>().await.ok()
     } else {
-        Err(format!("Failed to receive videos: {} - {}", status, text).into())
+        println!("Failed to retrieve client actions: {:?}", res.status());
+        None
     }
 }
 
-// Removed: receive_videos_for_playlist - using legacy endpoint instead
 
-async fn update_videos(
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClientPlaylistSchedule {
+    pub id: Uuid,
+    pub playlist_id: Uuid,
+    pub device_id: Uuid,
+    pub organization_id: Uuid,
+    pub start_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub playlist_name: String,
+    pub created_at: Option<DateTime<Utc>>,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+async fn get_client_playlist_schedule(client: &Client, config: &Config) -> Option<Vec<ClientPlaylistSchedule>> {
+    let res = client
+        .get(format!("{}/client-playlists_schedule/{}", config.url, config.id))
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .send()
+        .await
+        .ok()?;
+
+    if res.status().is_success() {
+        res.json::<Vec<ClientPlaylistSchedule>>().await.ok() // Deserialize to Vec<ClientPlaylistSchedule>
+    } else {
+        println!("Failed to retrieve client playlist schedule: {:?}", res.status());
+        None
+    }
+}
+
+async fn restart_app(client: &Client, config: &Config) {
+    let update_result = update_restart_app_flag(client, config).await;
+
+    if let Err(e) = update_result {
+        println!("Failed to update restart flag: {}", e);
+        return;
+    }
+
+    println!("Restarting Signage Application...");
+    let stop_mpv_output = Command::new("pkill").arg("mpv").output().await;
+
+    match stop_mpv_output {
+        Ok(output) if output.status.success() => {
+            println!("MPV player stopped successfully.");
+        }
+        Ok(output) => {
+            eprintln!(
+                "Failed to stop MPV player: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to execute stop MPV command: {}", e);
+        }
+    }
+
+    let restart_service_output = Command::new("sudo")
+        .arg("systemctl")
+        .arg("restart")
+        .arg("signaged.service")
+        .output()
+        .await;
+
+    match restart_service_output {
+        Ok(output) if output.status.success() => {
+            println!("Signage service restarted successfully.");
+        }
+        Ok(output) => {
+            eprintln!(
+                "Failed to restart signage service: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Err(e) => {
+            eprintln!("Failed to execute restart command: {}", e);
+        }
+    }
+}
+
+async fn process_schedules(
     client: &Client,
-    config: &mut Config,
-    data: &mut Data,
-    updated: Option<DateTime<Utc>>,
+    config: &Config,
+    schedules: Vec<ClientPlaylistSchedule>
 ) -> Result<(), Box<dyn Error>> {
-    data.videos = receive_videos(client, config).await?;
-    data.videos.sort_by_key(|v| v.asset_order);
+    let now = Utc::now();
+    println!("Checking schedules at: {}", now);
 
-    println!("{:#?}",  data.videos);
-    let message = "==========================================================  Reduced";
-    println!("{}", message);
-    data.last_update = updated;
-    data.update_content= Some(false);
-    data.write().await?;
-    let home = std::env::var("HOME")?;
-
-    if Path::new(&format!("{home}/.local/share/signage/playlist.txt")).try_exists()? {
-        tokio::fs::remove_file(format!("{home}/.local/share/signage/playlist.txt")).await?;
+    // Load existing data.json
+    let mut data = Data::new();
+    if let Err(e) = data.load().await {
+        eprintln!("Failed to load data.json: {}", e);
+        return Err(e);
     }
 
-    let mut file = tokio::fs::File::create(format!("{home}/.local/share/signage/playlist.txt")).await?;
+    // Check the currently stored playlist
+    let existing_playlist = data.current_playlist;
 
-    for video in &data.videos {
-        let line = format!("{home}/.local/share/signage/assets/{}\n", video.asset_name);
-        file.write_all(line.as_bytes()).await?;
+    for schedule in &schedules {
+        if now >= schedule.start_time && now <= schedule.end_time {
+            println!("Playlist is active: {}", schedule.playlist_id);
+
+            // If playlist hasn't changed, do nothing
+            if existing_playlist == Some(schedule.playlist_id) {
+                println!("Playlist has not changed. No update needed.");
+                return Ok(());
+            }
+
+            // Otherwise, update current_playlist and last_update
+            println!("Updating current playlist to: {}", schedule.playlist_id);
+            data.current_playlist = Some(schedule.playlist_id);
+            data.update_content = Some(true);
+            // Update playlist ID in backend
+            if let Err(e) = update_playlist_id(client, config, schedule.playlist_id).await {
+                eprintln!("Error updating playlist ID: {}", e);
+            }
+
+            // Preserve `videos` and write updated data.json
+            if let Err(e) = data.write().await {
+                eprintln!("Failed to write data.json: {}", e);
+                return Err(e);
+            }
+            println!("Updated data.json successfully. Restarting OMNIPLAYER");
+
+
+        }else{
+            println!("Playlist is NOT ACTIVE: {}", schedule.playlist_id);
+        }
     }
-
-    file.flush().await?;
-
-    cleanup_directory(&format!("{home}/.local/share/signage/assets/"), &data.videos).await?;
-
     Ok(())
 }
 
-// Removed: update_videos_for_playlist - using legacy endpoint instead
 
-async fn check_timeline_schedule(
+async fn update_playlist_id(
     client: &Client,
-    config: &mut Config,
-) -> Result<util::ClientTimelineScheduleResponse, Box<dyn Error>> {
-    let url = format!("{}/client-timeline-schedule/{}", config.url, config.id);
-    
-    let response = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .header("Cache-Control", "no-cache")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .header("Connection", "keep-alive")
-        .header("APIKEY", config.key.clone().unwrap_or_default())
-        .send()
-        .await?;
+    config: &Config,
+    playlist_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("{}/update-client-playlist/{}", config.url, config.id);
+    println!("Updating playlist ID at URL: {}", url);
 
-    let status = response.status();
-    let text = response.text().await?;
-    if status.is_success() {
-        let res: util::ClientTimelineScheduleResponse = serde_json::from_str(&text)?;
-        Ok(res)
-    } else {
-        Err(format!("Failed to check timeline schedule: {} - {}", status, text).into())
-    }
-}
-
-fn playlist_changed(
-    current_playlist: Option<Uuid>, 
-    schedule_response: &util::ClientTimelineScheduleResponse
-) -> (bool, Option<Uuid>) {
-    let new_playlist = schedule_response.active_playlist_id
-        .as_ref()
-        .and_then(|s| s.parse::<Uuid>().ok());
-    
-    let changed = current_playlist != new_playlist;
-    (changed, new_playlist)
-}
-
-fn calculate_poll_interval(schedule_response: &util::ClientTimelineScheduleResponse) -> Duration {
-    // Base interval
-    let base_interval = Duration::from_secs(20);
-    
-    // If there's a schedule change coming up, poll more frequently
-    if let Some(next_starts) = &schedule_response.next_schedule_starts_at {
-        if let Ok(next_time) = next_starts.parse::<DateTime<Utc>>() {
-            let now = Utc::now();
-            let time_until_next = next_time.signed_duration_since(now);
-            
-            // If next schedule is within 5 minutes, poll every 10 seconds
-            if time_until_next.num_minutes() <= 5 {
-                return Duration::from_secs(10);
-            }
-            // If next schedule is within 30 minutes, poll every 30 seconds
-            else if time_until_next.num_minutes() <= 30 {
-                return Duration::from_secs(30);
-            }
-        }
-    }
-    
-    // If there's an active schedule ending soon, poll more frequently
-    if let Some(ends_at) = &schedule_response.schedule_ends_at {
-        if let Ok(end_time) = ends_at.parse::<DateTime<Utc>>() {
-            let now = Utc::now();
-            let time_until_end = end_time.signed_duration_since(now);
-            
-            // If current schedule ends within 5 minutes, poll every 10 seconds
-            if time_until_end.num_minutes() <= 5 {
-                return Duration::from_secs(10);
-            }
-            // If current schedule ends within 30 minutes, poll every 30 seconds
-            else if time_until_end.num_minutes() <= 30 {
-                return Duration::from_secs(30);
-            }
-        }
-    }
-    
-    base_interval
-}
-
-/// Process schedule response and update data if needed
-async fn process_schedule_response(
-    client: &Client,
-    config: &mut Config,
-    data: &mut Data,
-    schedule_response: util::ClientTimelineScheduleResponse,
-) -> Result<bool, Box<dyn Error>> {
-    let (playlist_changed, new_playlist) = playlist_changed(data.current_playlist, &schedule_response);
-    let mut content_updated = false;
-    
-    // Update data with schedule information
-    data.active_schedule_ends = schedule_response.schedule_ends_at;
-    data.next_schedule_starts = schedule_response.next_schedule_starts_at;
-    data.next_playlist_id = schedule_response.next_playlist_id
-        .as_ref()
-        .and_then(|s| s.parse::<Uuid>().ok());
-    data.fallback_playlist_id = schedule_response.fallback_playlist_id
-        .as_ref()
-        .and_then(|s| s.parse::<Uuid>().ok());
-    
-    // Handle playlist changes
-    if playlist_changed {
-        println!("🔄 Playlist changed from {:?} to {:?}", data.current_playlist, new_playlist);
-        data.current_playlist = new_playlist;
-        
-        // Always use the legacy endpoint which works for both scheduled and direct playlists
-        let updated = sync(client, config).await?;
-        update_videos(client, config, data, updated).await?;
-        content_updated = true;
-    }
-    
-    // Acknowledge any pending update flags
-    if let Some(ref flags) = schedule_response.update_flags {
-        acknowledge_updates(client, config, flags).await?;
-    }
-    
-    Ok(content_updated)
-}
-
-async fn acknowledge_updates(
-    client: &Client,
-    config: &mut Config,
-    _update_flags: &util::ClientUpdateFlagsResponse,
-) -> Result<(), Box<dyn Error>> {
-    let url = format!("{}/client-update-flags/{}", config.url, config.id);
-    
-    let ack_payload = serde_json::json!({
-        "content_update_needed": false,
-        "playlist_update_needed": false,
-        "schedule_update_needed": false
-    });
-    
     let response = client
         .post(&url)
-        .header("Accept", "application/json")
-        .header("Content-Type", "application/json")
         .header("APIKEY", config.key.clone().unwrap_or_default())
-        .json(&ack_payload)
+        .json(&serde_json::json!({ "playlist_id": playlist_id }))
         .send()
         .await?;
 
-    let status = response.status();
-    if !status.is_success() {
-        let text = response.text().await?;
-        println!("⚠️ Failed to acknowledge updates: {} - {}", status, text);
+    if response.status().is_success() {
+        println!("Playlist ID successfully updated.");
+        Ok(())
     } else {
-        println!("✅ Acknowledged update flags");
+        Err(format!("Failed to update playlist ID: {:?}", response.status()).into())
     }
-    
+}
+
+
+async fn update_restart_app_flag(
+    client: &Client,
+    config: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("{}/update-restart-app-device/{}", config.url, config.id);
+    println!("Updating restart app flag at URL: {}", url);
+    let response = client
+        .post(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .json(&serde_json::json!({ "restart_app": false }))
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        println!("Restart App flag successfully updated.");
+        Ok(())
+    } else {
+        Err(format!("Failed to update restart flag: {:?}", response.status()).into())
+    }
+}
+
+
+async fn restart_device(client: &Client, config: &Config) {
+    // Update the restart flag to false
+    let update_result = update_restart_flag(client, config).await;
+
+    if let Err(e) = update_result {
+        println!("Failed to update restart flag: {}", e);
+        return;
+    }
+
+    println!("Restarting device...");
+    let status = Command::new("sudo").arg("reboot").status().await;
+
+    match status {
+        Ok(status) if status.success() => println!("Device is restarting..."),
+        Ok(status) => println!("Failed to restart device, exit code: {}", status),
+        Err(e) => println!("Failed to execute reboot command: {}", e),
+    }
+}
+
+async fn update_restart_flag(
+    client: &Client,
+    config: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let url = format!("{}/update-restart-device/{}", config.url, config.id);
+    println!("Updating screenshot flag at URL: {}", url);
+    let response = client
+        .post(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .json(&serde_json::json!({ "restart": false }))
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        println!("Restart flag successfully updated.");
+        Ok(())
+    } else {
+        Err(format!("Failed to update restart flag: {:?}", response.status()).into())
+    }
+}
+
+async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
+    env::set_var("DISPLAY", ":0");
+    env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
+
+    let screenshot_path = "/home/pi/screenshot.png";
+
+    // Get the screen resolution dynamically using `xrandr`
+    let resolution_output = Command::new("xrandr")
+        .arg("--current")
+        .output()
+        .await
+        .expect("Failed to execute xrandr");
+
+    let resolution_str = std::str::from_utf8(&resolution_output.stdout)?;
+    let resolution_line = resolution_str
+        .lines()
+        .find(|line| line.contains('*'))
+        .ok_or("Failed to find resolution line")?;
+
+    let resolution = resolution_line
+        .split_whitespace()
+        .nth(0)
+        .ok_or("Failed to parse resolution")?;
+
+    // Use the resolution in the ffmpeg command
+    let output = Command::new("ffmpeg")
+        .arg("-f")
+        .arg("x11grab")
+        .arg("-video_size")
+        .arg(resolution)
+        .arg("-i")
+        .arg(":0.0")
+        .arg("-frames:v")
+        .arg("1")
+        .arg(screenshot_path)
+        .output()
+        .await?;
+
+    if output.status.success() {
+        println!("Screenshot saved to {}", screenshot_path);
+        // Call the upload_screenshot function after taking the screenshot
+        if let Err(e) = upload_screenshot(client, config, screenshot_path).await {
+            eprintln!("Failed to upload screenshot: {}", e);
+        }
+    } else {
+        eprintln!(
+            "Failed to take screenshot: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     Ok(())
+}
+
+async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
+    let url = format!("{}/update-screenshot-device/{}", config.url, config.id);
+    println!("Updating screenshot flag at URL: {}", url);
+    let response = client
+        .post(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .json(&json!({ "screenshot": false }))
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        println!("Screenshot flag successfully updated.");
+        Ok(())
+    } else {
+        Err(format!("Failed to update screenshot flag: {:?}", response.status()).into())
+    }
+}
+
+async fn upload_screenshot(
+    client: &Client,
+    config: &Config,
+    screenshot_path: &str,
+) -> Result<(), Box<dyn Error>> {
+    let url = format!("{}/upload-screenshot/{}", config.url, config.id);
+    println!("Generated URL: {}", url);
+    let mut file = File::open(screenshot_path)?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+
+    let part = Part::bytes(buffer)
+        .file_name("screenshot.png")
+        .mime_str("image/png")?;
+
+    let form = Form::new().part("file", part);
+
+    let response = client
+        .post(&url)
+        .header("APIKEY", config.key.clone().unwrap_or_default())
+        .multipart(form)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        println!("Screenshot successfully uploaded.");
+
+        // Delete the screenshot file from the device
+        if let Err(e) = std::fs::remove_file(screenshot_path) {
+            eprintln!("Failed to delete screenshot: {}", e);
+        } else {
+            println!("Screenshot deleted from device.");
+        }
+
+        // Debugging statements to track the execution flow
+        println!("Calling update_screenshot_flag...");
+        if let Err(e) = update_screenshot_flag(client, config).await {
+            eprintln!("Failed to update screenshot flag: {}", e);
+        } else {
+            println!("Screenshot flag successfully updated.");
+        }
+
+        Ok(())
+    } else {
+        Err(format!("Failed to upload screenshot: {:?}", response.status()).into())
+    }
 }
