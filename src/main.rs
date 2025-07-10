@@ -268,35 +268,7 @@ async fn receive_videos(
     }
 }
 
-async fn receive_videos_for_playlist(
-    client: &Client,
-    config: &mut Config,
-    playlist_id: Uuid,
-) -> Result<Vec<Video>, Box<dyn Error>> {
-    let url = format!("{}/playlists/{}/videos", config.url, playlist_id);
-
-    let new_key = get_new_key(client, config).await?;
-    let auth_token = new_key.key;
-    let response = client
-        .get(&url)
-        .header("Accept", "application/json")
-        .header("Cache-Control", "no-cache")
-        .header("Accept-Encoding", "gzip, deflate, br")
-        .header("Connection", "keep-alive")
-        .header("APIKEY", auth_token)
-        .send()
-        .await?;
-
-    let status = response.status();
-    let text = response.text().await?;
-    if status.is_success() {
-        println!("Raw playlist response: {}", text);
-        let res: Vec<Video> = serde_json::from_str(&text)?;
-        Ok(res)
-    } else {
-        Err(format!("Failed to receive playlist videos: {} - {}", status, text).into())
-    }
-}
+// Removed: receive_videos_for_playlist - using legacy endpoint instead
 
 async fn update_videos(
     client: &Client,
@@ -333,40 +305,7 @@ async fn update_videos(
     Ok(())
 }
 
-async fn update_videos_for_playlist(
-    client: &Client,
-    config: &mut Config,
-    data: &mut Data,
-    playlist_id: Uuid,
-) -> Result<(), Box<dyn Error>> {
-    data.videos = receive_videos_for_playlist(client, config, playlist_id).await?;
-    data.videos.sort_by_key(|v| v.asset_order);
-
-    println!("{:#?}", data.videos);
-    let message = "========================================================== Playlist Updated";
-    println!("{}", message);
-    data.last_update = Some(Utc::now());
-    data.update_content = Some(false);
-    data.write().await?;
-    let home = std::env::var("HOME")?;
-
-    if Path::new(&format!("{home}/.local/share/signage/playlist.txt")).try_exists()? {
-        tokio::fs::remove_file(format!("{home}/.local/share/signage/playlist.txt")).await?;
-    }
-
-    let mut file = tokio::fs::File::create(format!("{home}/.local/share/signage/playlist.txt")).await?;
-
-    for video in &data.videos {
-        let line = format!("{home}/.local/share/signage/assets/{}\n", video.asset_name);
-        file.write_all(line.as_bytes()).await?;
-    }
-
-    file.flush().await?;
-
-    cleanup_directory(&format!("{home}/.local/share/signage/assets/"), &data.videos).await?;
-
-    Ok(())
-}
+// Removed: update_videos_for_playlist - using legacy endpoint instead
 
 async fn check_timeline_schedule(
     client: &Client,
@@ -475,19 +414,10 @@ async fn process_schedule_response(
         println!("🔄 Playlist changed from {:?} to {:?}", data.current_playlist, new_playlist);
         data.current_playlist = new_playlist;
         
-        if let Some(playlist_id) = new_playlist {
-            // Use the new playlist-specific endpoint
-            update_videos_for_playlist(client, config, data, playlist_id).await?;
-            content_updated = true;
-        } else if let Some(fallback_id) = data.fallback_playlist_id {
-            // Use fallback playlist if available
-            println!("🔄 Using fallback playlist: {}", fallback_id);
-            update_videos_for_playlist(client, config, data, fallback_id).await?;
-            content_updated = true;
-        } else {
-            // No active playlist and no fallback - this might be an error condition
-            println!("⚠️ No active playlist and no fallback playlist configured");
-        }
+        // Always use the legacy endpoint which works for both scheduled and direct playlists
+        let updated = sync(client, config).await?;
+        update_videos(client, config, data, updated).await?;
+        content_updated = true;
     }
     
     // Acknowledge any pending update flags
