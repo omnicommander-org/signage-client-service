@@ -64,6 +64,71 @@ async fn mpvstatus() -> String {
     }
 }
 
+async fn chip_architecture() -> String {
+    // Try to get architecture from uname -m
+    let arch = run_command("sh", &["-c", "uname -m"])
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    
+    // If we got a result, return it
+    if !arch.is_empty() {
+        return arch;
+    }
+    
+    // Fallback: try to read from /proc/cpuinfo
+    let cpuinfo = run_command("sh", &["-c", "cat /proc/cpuinfo | grep 'model name' | head -1 | cut -d: -f2 | tr -d ' '"])
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    
+    if !cpuinfo.is_empty() {
+        return cpuinfo;
+    }
+    
+    // Final fallback
+    "unknown".to_string()
+}
+
+async fn operating_system() -> String {
+    // Try to get OS info from /etc/os-release
+    let os_info = run_command("sh", &["-c", "cat /etc/os-release | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"'"])
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    
+    if !os_info.is_empty() {
+        return os_info;
+    }
+    
+    // Fallback: try lsb_release
+    let lsb_info = run_command("sh", &["-c", "lsb_release -d | cut -f2"])
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    
+    if !lsb_info.is_empty() {
+        return lsb_info;
+    }
+    
+    // Final fallback: uname -a
+    let uname_info = run_command("sh", &["-c", "uname -a"])
+        .await
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    
+    if !uname_info.is_empty() {
+        return uname_info;
+    }
+    
+    "unknown".to_string()
+}
+
 #[derive(Serialize)]
 pub struct Metrics {
     client_id: String,
@@ -74,6 +139,8 @@ pub struct Metrics {
     swapusage: String,
     uptime: String,
     mpvstatus: String,
+    chip_architecture: String,
+    os: String,
 }
 
 pub async fn collect_and_write_metrics(client_id: &str) -> Metrics {
@@ -86,6 +153,8 @@ pub async fn collect_and_write_metrics(client_id: &str) -> Metrics {
         swapusage: swap_usage().await,
         uptime: uptime().await,
         mpvstatus: mpvstatus().await,
+        chip_architecture: chip_architecture().await,
+        os: operating_system().await,
     };
 
     // Serialize metrics to JSON

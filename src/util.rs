@@ -40,6 +40,8 @@ pub struct ClientTimelineScheduleResponse {
     pub next_schedule_starts_at: Option<String>,
     pub next_playlist_id: Option<String>,
     pub update_flags: Option<ClientUpdateFlagsResponse>,
+    pub layout: Option<String>,
+    pub rotation: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -47,6 +49,9 @@ pub struct ClientUpdateFlagsResponse {
     pub playlist_update_needed: bool,
     pub schedule_update_needed: bool,
     pub content_update_needed: bool,
+    pub layout_change: bool,
+    pub current_layout: Option<String>,
+    pub current_rotation: Option<i32>,
 }
 
 impl Video {
