@@ -8,6 +8,9 @@ publish = false
 [build]
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
+[build-dependencies]
+chrono = "0.4.26"
+
 [dependencies]
 anyhow = "1.0.74"
 chrono = { version = "0.4.26", features = ["serde"] }
