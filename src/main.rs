@@ -24,6 +24,12 @@ mod data;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Add --version flag support at the very top
+    if std::env::args().any(|arg| arg == "--version") {
+        println!("v1.0.1");
+        std::process::exit(0);
+    }
+
     set_display();
     let mut config = Config::new();
     let client = Client::new();
