@@ -55,11 +55,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
 
                 if let Some(api_key) = &config.key {
-                    println!("Using current API key: {}", api_key);
-
                     // Collect and send metrics
                     let metrics = collect_and_write_metrics(&config.id).await;
-                    println!("Running Metrics");
+                    println!("Sending vitals");
                     send_metrics(&config.id, &metrics, api_key, &config);
 
                     // Check client actions
@@ -78,7 +76,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
 
                     //Check for playlist schedule updates
-                     println!("Checking Schudules");
+                     println!("Updating Schedule");
                      if let Some(schedules) = get_client_playlist_schedule(&client, &config).await {
                         if let Err(e) = process_schedules(&client, &config, schedules).await {
                             eprintln!("Error processing schedules: {}", e);
@@ -220,7 +218,6 @@ async fn process_schedules(
     schedules: Vec<ClientPlaylistSchedule>
 ) -> Result<(), Box<dyn Error>> {
     let now = Utc::now();
-    println!("Checking schedules at: {}", now);
 
     // Load existing data.json
     let mut data = Data::new();
@@ -234,16 +231,12 @@ async fn process_schedules(
 
     for schedule in &schedules {
         if now >= schedule.start_time && now <= schedule.end_time {
-            println!("Playlist is active: {}", schedule.playlist_id);
-
             // If playlist hasn't changed, do nothing
             if existing_playlist == Some(schedule.playlist_id) {
-                println!("Playlist has not changed. No update needed.");
                 return Ok(());
             }
 
             // Otherwise, update current_playlist and last_update
-            println!("Updating current playlist to: {}", schedule.playlist_id);
             data.current_playlist = Some(schedule.playlist_id);
             data.update_content = Some(true);
             // Update playlist ID in backend
@@ -256,11 +249,7 @@ async fn process_schedules(
                 eprintln!("Failed to write data.json: {}", e);
                 return Err(e);
             }
-            println!("Updated data.json successfully. Restarting OMNIPLAYER");
-
-
-        }else{
-            println!("Playlist is NOT ACTIVE: {}", schedule.playlist_id);
+            println!("Schedule updated - restarting OMNIPLAYER");
         }
     }
     Ok(())
@@ -273,7 +262,6 @@ async fn update_playlist_id(
     playlist_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = format!("{}/update-client-playlist/{}", config.url, config.id);
-    println!("Updating playlist ID at URL: {}", url);
 
     let response = client
         .post(&url)
@@ -283,7 +271,6 @@ async fn update_playlist_id(
         .await?;
 
     if response.status().is_success() {
-        println!("Playlist ID successfully updated.");
         Ok(())
     } else {
         Err(format!("Failed to update playlist ID: {:?}", response.status()).into())
@@ -296,7 +283,6 @@ async fn update_restart_app_flag(
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = format!("{}/update-restart-app-device/{}", config.url, config.id);
-    println!("Updating restart app flag at URL: {}", url);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -305,7 +291,6 @@ async fn update_restart_app_flag(
         .await?;
 
     if response.status().is_success() {
-        println!("Restart App flag successfully updated.");
         Ok(())
     } else {
         Err(format!("Failed to update restart flag: {:?}", response.status()).into())
@@ -337,7 +322,6 @@ async fn update_restart_flag(
     config: &Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let url = format!("{}/update-restart-device/{}", config.url, config.id);
-    println!("Updating screenshot flag at URL: {}", url);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -346,7 +330,6 @@ async fn update_restart_flag(
         .await?;
 
     if response.status().is_success() {
-        println!("Restart flag successfully updated.");
         Ok(())
     } else {
         Err(format!("Failed to update restart flag: {:?}", response.status()).into())
@@ -354,18 +337,12 @@ async fn update_restart_flag(
 }
 
 async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
+    println!("Taking screenshot");
     env::set_var("DISPLAY", ":0");
     env::set_var("XDG_RUNTIME_DIR", "/run/user/1000");
 
-    let screenshot_path = "/home/pi/screenshot.png";
-
-    // Delete any existing screenshot file to prevent "file already exists" error
-    if std::path::Path::new(screenshot_path).exists() {
-        match std::fs::remove_file(screenshot_path) {
-            Ok(_) => println!("Deleted existing screenshot file: {}", screenshot_path),
-            Err(e) => eprintln!("Failed to delete existing screenshot file: {}", e),
-        }
-    }
+    let temp_screenshot_path = format!("/home/pi/screenshot_temp_{}.png", Uuid::new_v4());
+    let final_screenshot_path = "/home/pi/screenshot.png";
 
     // Get the screen resolution dynamically using `xrandr`
     let resolution_output = Command::new("xrandr")
@@ -385,7 +362,7 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
         .nth(0)
         .ok_or("Failed to parse resolution")?;
 
-    // Use the resolution in the ffmpeg command
+    // Use the resolution in the ffmpeg command with temp file
     let output = Command::new("ffmpeg")
         .arg("-y")
         .arg("-f")
@@ -396,14 +373,17 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
         .arg(":0.0")
         .arg("-frames:v")
         .arg("1")
-        .arg(screenshot_path)
+        .arg(&temp_screenshot_path)
         .output()
         .await?;
 
     if output.status.success() {
-        println!("Screenshot saved to {}", screenshot_path);
+        // Rename temp file to final file (atomic operation)
+        std::fs::rename(&temp_screenshot_path, final_screenshot_path)?;
+        println!("Screenshot saved");
+        
         // Call the upload_screenshot function after taking the screenshot
-        if let Err(e) = upload_screenshot(client, config, screenshot_path).await {
+        if let Err(e) = upload_screenshot(client, config, final_screenshot_path).await {
             eprintln!("Failed to upload screenshot: {}", e);
         }
     } else {
@@ -418,7 +398,6 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 
 async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/update-screenshot-device/{}", config.url, config.id);
-    println!("Updating screenshot flag at URL: {}", url);
     let response = client
         .post(&url)
         .header("APIKEY", config.key.clone().unwrap_or_default())
@@ -427,7 +406,6 @@ async fn update_screenshot_flag(client: &Client, config: &Config) -> Result<(), 
         .await?;
 
     if response.status().is_success() {
-        println!("Screenshot flag successfully updated.");
         Ok(())
     } else {
         Err(format!("Failed to update screenshot flag: {:?}", response.status()).into())
@@ -440,7 +418,6 @@ async fn upload_screenshot(
     screenshot_path: &str,
 ) -> Result<(), Box<dyn Error>> {
     let url = format!("{}/upload-screenshot/{}", config.url, config.id);
-    println!("Generated URL: {}", url);
     let mut file = File::open(screenshot_path)?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
@@ -459,21 +436,17 @@ async fn upload_screenshot(
         .await?;
 
     if response.status().is_success() {
-        println!("Screenshot successfully uploaded.");
+        println!("Screenshot uploaded");
 
         // Delete the screenshot file from the device
         if let Err(e) = std::fs::remove_file(screenshot_path) {
             eprintln!("Failed to delete screenshot: {}", e);
         } else {
-            println!("Screenshot deleted from device.");
+            println!("Screenshot completed");
         }
 
-        // Debugging statements to track the execution flow
-        println!("Calling update_screenshot_flag...");
         if let Err(e) = update_screenshot_flag(client, config).await {
             eprintln!("Failed to update screenshot flag: {}", e);
-        } else {
-            println!("Screenshot flag successfully updated.");
         }
 
         Ok(())
