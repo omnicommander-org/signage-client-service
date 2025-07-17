@@ -359,6 +359,14 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 
     let screenshot_path = "/home/pi/screenshot.png";
 
+    // Delete any existing screenshot file to prevent "file already exists" error
+    if std::path::Path::new(screenshot_path).exists() {
+        match std::fs::remove_file(screenshot_path) {
+            Ok(_) => println!("Deleted existing screenshot file: {}", screenshot_path),
+            Err(e) => eprintln!("Failed to delete existing screenshot file: {}", e),
+        }
+    }
+
     // Get the screen resolution dynamically using `xrandr`
     let resolution_output = Command::new("xrandr")
         .arg("--current")
@@ -379,6 +387,7 @@ async fn take_screenshot(client: &Client, config: &Config) -> Result<(), Box<dyn
 
     // Use the resolution in the ffmpeg command
     let output = Command::new("ffmpeg")
+        .arg("-y")
         .arg("-f")
         .arg("x11grab")
         .arg("-video_size")
